@@ -1,5 +1,7 @@
 import io
-from Helper import list_to_string, string_to_list
+import json
+
+from Helper import readline
 
 class Player:
   def __init__(self, is_human:bool, grid_size=8):
@@ -10,11 +12,11 @@ class Player:
   def export_state(self) -> str:
     ret = ""
     ret += str(self.is_human) + "\n"
-    ret += list_to_string(self.boat_grid) + "\n"
-    ret += list_to_string(self.hit_grid) + "\n"
+    ret += json.dumps(self.boat_grid) + "\n"
+    ret += json.dumps(self.hit_grid) + "\n"
     return ret
 
   def import_state(self, file:io.TextIOWrapper):
-    self.is_human = bool(file.readline())
-    self.boat_grid = string_to_list(file.readline())
-    self.hit_grid = string_to_list(file.readline())
+    self.is_human = bool(readline(file))
+    self.boat_grid = json.loads(readline(file))
+    self.hit_grid = json.loads(readline(file))

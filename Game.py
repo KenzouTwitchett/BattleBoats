@@ -1,8 +1,9 @@
 import replit
 from Player import Player
-from Helper import get_boat_grid, get_hit_grid, convert_coordinate_to_grid_index, convert_grid_index_to_coordinate, merge_grids
+from Helper import check_coordinate, check_coordinate_string, check_orientation_string, convert_orientation_string, get_boat_grid, get_hit_grid, convert_coordinate_to_grid_index, convert_grid_index_to_coordinate, merge_grids, readline, get_boat_info, get_boat_chunk_letter, boat_chunk_letters
 import random
 import os
+import json
 
 class Game:
   def __init__(self):
@@ -11,6 +12,25 @@ class Game:
     self.running = True
     self.turns = 1
     self.last_turn_message = ""
+    self.setup_finished = False
+    self.setup_stage = 0
+    self.boat_types = [
+      {
+        "size": 1,
+        "count": 2,
+        "name": "Destroyer"
+      },
+      {
+        "size": 2,
+        "count": 2,
+        "name": "Submarine"
+      },
+      {
+        "size": 3,
+        "count": 1,
+        "name": "Carrier"
+      }
+    ]
     self.print_menu()
 
   def print_menu(self):
@@ -27,7 +47,10 @@ class Game:
     elif chosen_option == "2":
       if os.path.isfile("./state"):
         self.import_state()
-        self.game_loop()
+        if self.setup_finished:
+          self.game_loop()
+        else:
+          self.game_setup()
       else:
         self.print_menu()
     elif chosen_option == "3":
@@ -45,57 +68,112 @@ class Game:
   def game_setup(self):
     # prompt user to place boats
     max_boats = 5
-    i = 0
     # this is a while loop not a for loop for a good reason
-    while i < max_boats:
+    while self.setup_stage < max_boats:
       replit.clear()
+      self.export_state()
+      boat_info = get_boat_info(self.setup_stage, self.boat_types)
       print(self.last_turn_message)
       print(get_boat_grid(self.player))
-      print(f"\nInput coordinate for boat ({max_boats - i} boat{"s" if i != (max_boats-1) else ""} left):")
+      printable_boat = "".join([get_boat_chunk_letter(x, boat_info["size"], "horizontal") for x in range(boat_info["size"])])
+      print(f"\nInput{"" if boat_info["size"] == 1 else " left" } coordinate for {printable_boat}:{get_boat_info(self.setup_stage, self.boat_types)["name"]} ({max_boats - self.setup_stage} boat{"s" if self.setup_stage != (max_boats-1) else ""} left):")
       coordinate_string = input("> ")
-      coordinate = convert_coordinate_to_grid_index(coordinate_string)
-      if not coordinate:
-        # skip this increment since this is an invalid coordinate
-        self.last_turn_message = f"Coordinate {coordinate_string.upper()} invalid!"
-        continue
-      
-      # else check to see if the coordinate exists
-      try:
-        self.player.boat_grid[coordinate[0]][coordinate[1]]
-      except IndexError:
-        # it's out of bounds so skip
-        self.last_turn_message = f"Coordinate {coordinate_string.upper()} invalid!"
+
+      # check the coordinate without knowing the type of boat yet
+      res = check_coordinate_string(coordinate_string, self.player.boat_grid)
+
+      if not isinstance(res, bool):
+        # you FAIL
+        self.last_turn_message = res
         continue
 
-      # else check to see if there's already a boat there
-      if self.player.boat_grid[coordinate[0]][coordinate[1]] != " ":
-        # boat exists :(
-        self.last_turn_message = f"Boat already placed at {coordinate_string.upper()}!"
-        continue
+      # ok that was successful
+      coordinate = convert_coordinate_to_grid_index(coordinate_string) # this wont fail
 
-      # finally set it if all those checks pass
-      self.player.boat_grid[coordinate[0]][coordinate[1]] = "B"
-      self.last_turn_message = f"Boat placed at {coordinate_string.upper()}!"
+      orientation = "vertical"
+      if boat_info["size"] != 1:
+        print("Input orientation for boat:")
+        orientation_string = input("> ")
+  
+        res = check_orientation_string(orientation_string)
+  
+        if not isinstance(res, bool):
+          # you FAIL AGAIN
+          self.last_turn_message = res
+          continue
+  
+        # ok that was successful
+        orientation = convert_orientation_string(orientation_string)
 
+      # figure out where the boat is going to be placed
+      boat_chunk_coordinates = []
+      for boat_chunk_index in range(boat_info["size"]):
+        if orientation == "vertical":
+          boat_chunk_coordinates.append((coordinate[0] + boat_chunk_index, coordinate[1]))
+        else:
+          boat_chunk_coordinates.append((coordinate[0], coordinate[1] + boat_chunk_index))
+
+      # and check to see if there's any issues with them
+      failed = False
+      for chunk_coordinate in boat_chunk_coordinates:
+        res = check_coordinate(chunk_coordinate, self.player.boat_grid, True)
+        if not isinstance(res, bool):
+          # you FAIL AGAIN AGAIN
+          self.last_turn_message = res
+          failed = True
+          break
+      if failed: continue
+
+      # FINALLY after all those checks IT CAN BE PLACED
+      for chunk_index, chunk_coordinate in enumerate(boat_chunk_coordinates):
+        letter = get_boat_chunk_letter(chunk_index, boat_info["size"], orientation)
+        self.player.boat_grid[chunk_coordinate[0]][chunk_coordinate[1]] = letter
+      self.last_turn_message = f"{boat_info["name"]} placed at {coordinate_string.upper()}!"
+
+  
       # if this was a for loop every time i had to skip id have to write i -= 1
       # but now we can just manually increment i
-      i += 1
+      self.setup_stage += 1
 
     i = 0
     # then get computer to place boats
     while i < max_boats:
-      row = random.randint(0, len(self.computer.boat_grid)-1)
-      col = random.randint(0, len(self.computer.boat_grid[row])-1)
+      boat_info = get_boat_info(i, self.boat_types)
+      row = random.randint(0, len(self.computer.boat_grid)-2)
+      col = random.randint(0, len(self.computer.boat_grid[row])-2)
+      coordinate = (row, col)
 
-      # coordinate will never be out of bounds
-      # but still need to check for boatage here
-      if self.computer.boat_grid[row][col] != " ":
-        continue
+      orientation = random.choice(["vertical", "horizontal"])
 
-      # place boat for computer
-      self.computer.boat_grid[row][col] = "B"
+      # figure out where the boat is going to be placed
+      boat_chunk_coordinates = []
+      for boat_chunk_index in range(boat_info["size"]):
+        if orientation == "vertical":
+          boat_chunk_coordinates.append((coordinate[0] + boat_chunk_index, coordinate[1]))
+        else:
+          boat_chunk_coordinates.append((coordinate[0], coordinate[1] + boat_chunk_index))
+
+      # and check to see if there's any issues with them
+      failed = False
+      for chunk_coordinate in boat_chunk_coordinates:
+        res = check_coordinate(chunk_coordinate, self.computer.boat_grid, True)
+        if not isinstance(res, bool):
+          # fail :(
+          #self.last_turn_message = res
+          print("fail computer boat place (overlap)")
+          failed = True
+          break
+      if failed: continue
+
+      # aaand place
+      for chunk_index, chunk_coordinate in enumerate(boat_chunk_coordinates):
+        letter = get_boat_chunk_letter(chunk_index, boat_info["size"], orientation)
+        print(f"[computer] place at {coordinate}: {letter}")
+        self.computer.boat_grid[chunk_coordinate[0]][chunk_coordinate[1]] = letter
+      #self.last_turn_message = f"{boat_info["name"]} placed at {coordinate_string.upper()}!"
+
       i += 1
-
+    
     # replit.clear()
     # print("Player grid:")
     # print(get_boat_grid(self.player))
@@ -103,6 +181,7 @@ class Game:
     # print(get_boat_grid(self.computer))
 
     self.last_turn_message = ""
+    self.setup_finished = True
     self.game_loop()
 
   def game_loop(self):
@@ -143,7 +222,7 @@ class Game:
       return
       
     # else time to check hits
-    if self.computer.boat_grid[coordinate[0]][coordinate[1]] == "B":
+    if self.computer.boat_grid[coordinate[0]][coordinate[1]] in boat_chunk_letters:
       # HIT!
       self.last_turn_message = f"You hit the computer's boat at {coordinate_string.upper()}!"
       self.player.hit_grid[coordinate[0]][coordinate[1]] = "X"
@@ -159,7 +238,7 @@ class Game:
     player_won = True
     for row in range(len(self.computer.boat_grid)):
       for col in range(len(self.computer.boat_grid[row])):
-        if self.computer.boat_grid[row][col] == "B":
+        if self.computer.boat_grid[row][col] in boat_chunk_letters:
           player_won = False
           break
       if not player_won: break
@@ -178,7 +257,7 @@ class Game:
       if self.computer.hit_grid[row][col] == " ":
         computer_already_targeted = False
     
-    if self.player.boat_grid[row][col] == "B":
+    if self.player.boat_grid[row][col] in boat_chunk_letters:
       # computer hit!
       self.last_turn_message += f"\nComputer hit your boat at {convert_grid_index_to_coordinate((row, col))}"
       self.computer.hit_grid[row][col] = "X"
@@ -194,7 +273,7 @@ class Game:
     computer_won = True
     for row in range(len(self.player.boat_grid)):
       for col in range(len(self.player.boat_grid[row])):
-        if self.player.boat_grid[row][col] == "B":
+        if self.player.boat_grid[row][col] in boat_chunk_letters:
           computer_won = False
           break
       if not computer_won: break
@@ -206,8 +285,12 @@ class Game:
 
   def import_state(self):
     with open("./state", "r") as state_file:
-      self.turns = int(state_file.readline())
-      self.running = bool(state_file.readline())
+      self.turns = int(readline(state_file))
+      self.running = bool(readline(state_file))
+      self.setup_stage = int(readline(state_file))
+      self.setup_finished = bool(readline(state_file))
+      self.last_turn_message = readline(state_file).replace("|","\n")
+      self.boat_types = json.loads(readline(state_file))
       self.player.import_state(state_file)
       self.computer.import_state(state_file)
 
@@ -215,11 +298,16 @@ class Game:
     with open("./state", "w") as state_file:
       state_file.write(str(self.turns) + "\n")
       state_file.write(str(self.running) + "\n")
+      state_file.write(str(self.setup_stage) + "\n")
+      state_file.write(str(self.setup_finished) + "\n")
+      state_file.write(self.last_turn_message.replace("\n","|") + "\n")
+      state_file.write(json.dumps(self.boat_types) + "\n")
       state_file.write(self.player.export_state())
       state_file.write(self.computer.export_state())
 
   def player_win(self):
     replit.clear()
+    self.export_state()
     print("You win!")
     print(f"Turns: {self.turns}")
     print("Final board:")
@@ -236,6 +324,7 @@ class Game:
 
   def computer_win(self):
     replit.clear()
+    self.export_state()
     print("You lose!")
     print(f"Turns: {self.turns}")
     print("Final board:")
